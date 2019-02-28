@@ -241,13 +241,13 @@ def get_features(instances,tokenizer,max_seq_length):
     next_sentence_label = 1 if instance.is_random_next else 0
 
     features = collections.OrderedDict()
-    features["input_ids"] = create_int_feature(input_ids)
-    features["input_mask"] = create_int_feature(input_mask)
-    features["segment_ids"] = create_int_feature(segment_ids)
-    features["masked_lm_positions"] = create_int_feature(masked_lm_positions)
-    features["masked_lm_ids"] = create_int_feature(masked_lm_ids)
-    features["masked_lm_weights"] = create_float_feature(masked_lm_weights)
-    features["next_sentence_labels"] = create_int_feature([next_sentence_label])
+    features["input_ids"] = (input_ids)
+    features["input_mask"] = (input_mask)
+    features["segment_ids"] = (segment_ids)
+    features["masked_lm_positions"] = (masked_lm_positions)
+    features["masked_lm_ids"] = (masked_lm_ids)
+    features["masked_lm_weights"] = (masked_lm_weights)
+    features["next_sentence_labels"] = ([next_sentence_label])
 
 
     examples.append(features)
