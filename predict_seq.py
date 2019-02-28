@@ -287,36 +287,36 @@ def input_fn_builder(features, seq_length):
     # not TPU compatible. The right way to load data is with TFRecordReader.
     d = tf.data.Dataset.from_tensor_slices({
         "segment_ids":
-            tf.constant(all_segment_ids, shape=[num_examples, seq_length], dtype=tf.int32),
+            tf.constant(all_segment_ids, shape=[num_examples, seq_length], dtype=tf.int64),
         "input_ids":
             tf.constant(
                 all_input_ids, shape=[num_examples, seq_length],
-                dtype=tf.int32),
+                dtype=tf.int64),
         "input_mask":
             tf.constant(
                 all_input_mask,
                 shape=[num_examples, seq_length],
-                dtype=tf.int32),
+                dtype=tf.int64),
         "masked_lm_positions":
             tf.constant(
                 all_masked_lm_positions,
                 shape=[num_examples, seq_length],
-                dtype=tf.int32),
+                dtype=tf.int64),
         "masked_lm_weights":
             tf.constant(
                 all_masked_lm_weights,
                 shape=[num_examples, seq_length],
-                dtype=tf.int32),
+                dtype=tf.int64),
         "masked_lm_ids":
             tf.constant(
                 all_masked_lm_ids,
                 shape=[num_examples, seq_length],
-                dtype=tf.int32),
+                dtype=tf.int64),
         "next_sentence_labels":
             tf.constant(
                 all_next_sentence_labels,
                 shape=[num_examples, 1],
-                dtype=tf.int32),
+                dtype=tf.int64),
     })
 
     d = d.batch(batch_size=batch_size, drop_remainder=False)
