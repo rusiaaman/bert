@@ -26,7 +26,7 @@ import collections
 import random
 import tokenization
 import tensorflow as tf
-
+import numpy as np
 
 flags = tf.flags
 
@@ -185,6 +185,7 @@ def create_training_instances(input_files, tokenizer, max_seq_length):
         for segment in re.split(r"(\[MASK\])",line):
           if segment=="[MASK]":
             tokens.append(segment)
+            continue
           _toks = tokenizer.tokenize(segment)
           if _toks:
             tokens.extend(_toks)
@@ -241,13 +242,13 @@ def get_features(instances,tokenizer,max_seq_length):
     next_sentence_label = 1 if instance.is_random_next else 0
 
     features = collections.OrderedDict()
-    features["input_ids"] = create_int_feature(input_ids)
-    features["input_mask"] = create_int_feature(input_mask)
-    features["segment_ids"] = create_int_feature(segment_ids)
-    features["masked_lm_positions"] = create_int_feature(masked_lm_positions)
-    features["masked_lm_ids"] = create_int_feature(masked_lm_ids)
-    features["masked_lm_weights"] = create_float_feature(masked_lm_weights)
-    features["next_sentence_labels"] = create_int_feature([next_sentence_label])
+    features["input_ids"] = (input_ids)
+    features["input_mask"] = (input_mask)
+    features["segment_ids"] = (segment_ids)
+    features["masked_lm_positions"] = (masked_lm_positions)
+    features["masked_lm_ids"] = (masked_lm_ids)
+    features["masked_lm_weights"] = (masked_lm_weights)
+    features["next_sentence_labels"] = ([next_sentence_label])
 
 
     examples.append(features)
@@ -287,21 +288,21 @@ def input_fn_builder(features, seq_length):
     # not TPU compatible. The right way to load data is with TFRecordReader.
     d = tf.data.Dataset.from_tensor_slices({
         "segment_ids":
-            tf.constant(all_segment_ids, shape=[num_examples, seq_length], dtype=tf.int64),
+            tf.constant(all_segment_ids, shape=[num_examples, seq_length], dtype=tf.int32),
         "input_ids":
             tf.constant(
                 all_input_ids, shape=[num_examples, seq_length],
-                dtype=tf.int64),
+                dtype=tf.int32),
         "input_mask":
             tf.constant(
                 all_input_mask,
                 shape=[num_examples, seq_length],
-                dtype=tf.int64),
+                dtype=tf.int32),
         "masked_lm_positions":
             tf.constant(
                 all_masked_lm_positions,
                 shape=[num_examples, seq_length],
-                dtype=tf.int64),
+                dtype=tf.int32),
         "masked_lm_weights":
             tf.constant(
                 all_masked_lm_weights,
@@ -311,18 +312,79 @@ def input_fn_builder(features, seq_length):
             tf.constant(
                 all_masked_lm_ids,
                 shape=[num_examples, seq_length],
-                dtype=tf.int64),
+                dtype=tf.int32),
         "next_sentence_labels":
             tf.constant(
                 all_next_sentence_labels,
                 shape=[num_examples, 1],
-                dtype=tf.int64),
+                dtype=tf.int32),
     })
 
     d = d.batch(batch_size=batch_size, drop_remainder=False)
     return d
 
   return input_fn
+
+def gather_indexes(sequence_tensor, positions):
+  """Gathers the vectors at the specific positions over a minibatch."""
+  sequence_shape = modeling.get_shape_list(sequence_tensor, expected_rank=3)
+  batch_size = sequence_shape[0]
+  seq_length = sequence_shape[1]
+  width = sequence_shape[2]
+
+  flat_offsets = tf.reshape(
+      tf.range(0, batch_size, dtype=tf.int32) * seq_length, [-1, 1])
+  flat_positions = tf.reshape(positions + flat_offsets, [-1])
+  flat_sequence_tensor = tf.reshape(sequence_tensor,
+                                    [batch_size * seq_length, width])
+  output_tensor = tf.gather(flat_sequence_tensor, flat_positions)
+  return output_tensor
+
+
+def get_masked_lm_output(bert_config, input_tensor, output_weights, positions,
+                         label_ids, label_weights):
+  """Get loss and log probs for the masked LM."""
+  input_tensor = gather_indexes(input_tensor, positions)
+
+  with tf.variable_scope("cls/predictions"):
+    # We apply one more non-linear transformation before the output layer.
+    # This matrix is not used after pre-training.
+    with tf.variable_scope("transform"):
+      input_tensor = tf.layers.dense(
+          input_tensor,
+          units=bert_config.hidden_size,
+          activation=modeling.get_activation(bert_config.hidden_act),
+          kernel_initializer=modeling.create_initializer(
+              bert_config.initializer_range))
+      input_tensor = modeling.layer_norm(input_tensor)
+
+    # The output weights are the same as the input embeddings, but there is
+    # an output-only bias for each token.
+    output_bias = tf.get_variable(
+        "output_bias",
+        shape=[bert_config.vocab_size],
+        initializer=tf.zeros_initializer())
+    logits = tf.matmul(input_tensor, output_weights, transpose_b=True)
+    logits = tf.nn.bias_add(logits, output_bias)
+    log_probs = tf.nn.log_softmax(logits, axis=-1)
+
+    label_ids = tf.reshape(label_ids, [-1])
+    label_weights = tf.reshape(label_weights, [-1])
+
+    one_hot_labels = tf.one_hot(
+        label_ids, depth=bert_config.vocab_size, dtype=tf.float32)
+
+    # The `positions` tensor might be zero-padded (if the sequence is too
+    # short to have the maximum number of predictions). The `label_weights`
+    # tensor has a value of 1.0 for every real prediction and 0.0 for the
+    # padding predictions.
+    per_example_loss = -tf.reduce_sum(log_probs * one_hot_labels, axis=[-1])
+    numerator = tf.reduce_sum(label_weights * per_example_loss)
+    denominator = tf.reduce_sum(label_weights) + 1e-5
+    loss = numerator / denominator
+
+  return (loss, per_example_loss, log_probs)
+
 
 def model_fn_builder(bert_config, init_checkpoint, use_tpu,
                      use_one_hot_embeddings):
@@ -359,7 +421,7 @@ def model_fn_builder(bert_config, init_checkpoint, use_tpu,
          masked_lm_positions, masked_lm_ids, masked_lm_weights)
 
 
-    total_loss = masked_lm_loss + next_sentence_loss
+    total_loss = masked_lm_loss
 
     tvars = tf.trainable_variables()
 
@@ -398,6 +460,26 @@ def model_fn_builder(bert_config, init_checkpoint, use_tpu,
 
 
 
+def get_index_for_prediction(instances):
+  done = [True]*len(instances)
+  for i,f in enumerate(instances):
+    if len(instances[i].masked_lm_positions)==0:
+      done[i]=False
+
+  return done
+
+
+def write_output(writer,tokens):
+  tf.logging.info("***** Pred results *****")
+  to_print=""
+  for t in tokens:
+    if t.startswith("##"):
+      to_print+=t
+    else:
+      to_print+=" "+t
+
+  tf.logging.info(to_print)
+  writer.write(to_print+"\n")
 
 
 def main(_):
@@ -414,14 +496,8 @@ def main(_):
   for input_file in input_files:
     tf.logging.info("  %s", input_file)
 
-  instances = create_training_instances(
-      input_files, tokenizer, FLAGS.max_seq_length
-      )
+  
 
-
-  features = get_features(instances, tokenizer, FLAGS.max_seq_length)
-
-  bert_config = modeling.BertConfig.from_json_file(FLAGS.bert_config_file)
 
   tf.gfile.MakeDirs(FLAGS.output_dir)
 
@@ -456,18 +532,47 @@ def main(_):
   tf.logging.info("***** Running prediction *****")
   tf.logging.info("  Batch size = %d", FLAGS.predict_batch_size)
 
-  pred_input_fn = input_fn_builder(features=features, seq_length=FLAGS.max_seq_length)
+  itern = 0
+  output_pred_file = os.path.join(FLAGS.output_dir, "pred_results.txt")
+  instances = create_training_instances(
+      input_files, tokenizer, FLAGS.max_seq_length
+      )
+  while True:
 
-  for result in estimator.predict(pred_input_fn, yield_single_examples=True):
-    import pdb;
-    pdb.set_trace()
+    todo = get_index_for_prediction(instances)
 
-    output_pred_file = os.path.join(FLAGS.output_dir, "pred_results.txt")
+    if sum(todo)==0:
+      break
+
+    features = get_features([instances[i] for i in range(len(todo)) if todo[i]], tokenizer, FLAGS.max_seq_length)
+
+    bert_config = modeling.BertConfig.from_json_file(FLAGS.bert_config_file)
+
+    pred_input_fn = input_fn_builder(features=features, seq_length=FLAGS.max_seq_length)
+
+    num_examples = len(features)
+
+    result = next(estimator.predict(pred_input_fn, yield_single_examples=False))
+    # this function returns the prediction only for masked tokens
+    # We have to convert to complete utterance using instances
+    result = result.reshape([num_examples,-1,bert_config.vocab_size])
+    k = 0
     with tf.gfile.GFile(output_pred_file, "w") as writer:
-      tf.logging.info("***** Pred results *****")
-      for key in sorted(result.keys()):
-        tf.logging.info("  %s = %s", key, str(result[key].shape))
-        writer.write("%s = %s\n" % (key, str(result[key].shape)))
+      for j in enumerate(todo):
+        if not todo[j]:
+          tokens = instances[j].tokens
+          write_output(writer,tokens)
+        else:
+          m=instances[j].masked_lm_positions[0]
+          instances[j].tokens[m] = tokenizer.convert_ids_to_tokens([np.argmax(result[k][0])])[0]
+          instances[j].masked_lm_positions = instances[j].masked_lm_positions[1:]
+          instances[j].masked_lm_labels = instances[j].masked_lm_labels[1:]
+          tokens = instances[j].tokens
+          write_output(writer,tokens)
+          k+=1
+
+          
+        
 
 if __name__ == "__main__":
   flags.mark_flag_as_required("input_file")
