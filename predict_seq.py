@@ -397,13 +397,13 @@ def get_new_input_ids(input_ids,
   batch_size = sequence_shape[0]
   seq_length = sequence_shape[1]
 
-  masked_lm_probs = tf.reshape(masked_lm_probs,(batch_size,seq_length,-1))
-
-  #Getting the indexes for the predictions. shape = (batch_size,seq_length)
-  mask_lab_pred = tf.cast(tf.argmax(masked_lm_probs,axis=-1),dtype=tf.int32)
-  # Gathering the first masks only. shape = (batch_size,)
-  mask_lab_pred = tf.gather(mask_lab_pred,
-                            tf.constant(0,dtype=tf.int32),axis=-1)
+  # Gathering the first masks only. shape = (batch_size,vocab_size)
+  mask_lab_pred = tf.gather(masked_lm_probs,
+                            tf.range(0,batch_size*seq_length,delta=seq_length),axis=0)
+  #Getting the indexes for the predictions. shape = (batch_size,1)
+  #mask_lab_pred = tf.random.multinomial(mask_lab_pred,1,output_dtype=tf.int32)
+  mask_lab_pred = tf.reshape(tf.cast(tf.argmax(mask_lab_pred,
+                  axis=-1),dtype=tf.int32),(batch_size,1))
   # Gathering positions of the first mask. shape=(batch_size,)
   mask_positions = tf.gather(masked_lm_positions,
                           tf.constant(0,dtype=tf.int32),axis=-1)
@@ -413,8 +413,8 @@ def get_new_input_ids(input_ids,
   #--Removing those positions there is no mask left
   mask_positions = tf.cast(tf.reduce_max(masked_lm_positions,axis=-1,keepdims=True)>0
                         ,dtype=tf.int32)*mask_positions
+
   #--Next multiplying mask_positions_one_hot to mask_lab_pred and forming new_ids
-  mask_lab_pred = tf.reshape(mask_lab_pred,(batch_size,1))
   input_ids = mask_positions*mask_lab_pred+(1-mask_positions)*input_ids
 
   #Setting the first mask lm_weights to be zero
@@ -543,7 +543,7 @@ def write_output(writer,tokens):
     if t in ["[CLS]","[SEP]","[PAD]"]:
       continue
     if t.startswith("##"):
-      to_print+=t
+      to_print+=t[2:]
     else:
       to_print+=" "+t
 
