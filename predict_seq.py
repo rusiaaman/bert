@@ -410,6 +410,9 @@ def get_new_input_ids(input_ids,
   #Assigning the first masks in input_ids
   #--First converting mask_positions to one hot, shape=(batch_size,seq_length)
   mask_positions = tf.one_hot(mask_positions,depth=seq_length,axis=1,dtype=tf.int32)
+  #--Removing those positions there is no mask left
+  mask_positions = tf.cast(tf.reduce_max(masked_lm_positions,axis=-1,keepdims=True)>0
+                        ,dtype=tf.int32)*mask_positions
   #--Next multiplying mask_positions_one_hot to mask_lab_pred and forming new_ids
   mask_lab_pred = tf.reshape(mask_lab_pred,(batch_size,1))
   input_ids = mask_positions*mask_lab_pred+(1-mask_positions)*input_ids
@@ -537,6 +540,8 @@ def write_output(writer,tokens):
   tf.logging.info("***** Pred results *****")
   to_print=""
   for t in tokens:
+    if t in ["[CLS]","[SEP]","[PAD]"]:
+      continue
     if t.startswith("##"):
       to_print+=t
     else:
@@ -602,41 +607,21 @@ def main(_):
   instances = create_training_instances(
       input_files, tokenizer, FLAGS.max_seq_length
       )
-  while True:
 
-    todo = get_index_for_prediction(instances)
+  todo = get_index_for_prediction(instances)
 
-    if sum(todo)==0:
-      break
+  features = get_features([instances[i] for i in range(len(todo)) if todo[i]], tokenizer, FLAGS.max_seq_length)
 
-    features = get_features([instances[i] for i in range(len(todo)) if todo[i]], tokenizer, FLAGS.max_seq_length)
+  pred_input_fn = input_fn_builder(features=features, seq_length=FLAGS.max_seq_length)
 
-    pred_input_fn = input_fn_builder(features=features, seq_length=FLAGS.max_seq_length)
+  num_examples = len(features)
 
-    num_examples = len(features)
-
-    result = next(estimator.predict(pred_input_fn, yield_single_examples=False))
-    # this function returns the prediction only for masked tokens
-    # We have to convert to complete utterance using instances
-    import pdb; pdb.set_trace()
-    result = result.reshape([num_examples,-1,bert_config.vocab_size])
-    k = 0
-    with tf.gfile.GFile(output_pred_file, "w") as writer:
-      for j in enumerate(todo):
-        if not todo[j]:
-          tokens = instances[j].tokens
-          write_output(writer,tokens)
-        else:
-          m=instances[j].masked_lm_positions[0]
-          instances[j].tokens[m] = tokenizer.convert_ids_to_tokens([np.argmax(result[k][0])])[0]
-          instances[j].masked_lm_positions = instances[j].masked_lm_positions[1:]
-          instances[j].masked_lm_labels = instances[j].masked_lm_labels[1:]
-          tokens = instances[j].tokens
-          write_output(writer,tokens)
-          k+=1
-
-          
+  with tf.gfile.GFile(output_pred_file, "w") as writer:
+    for result in estimator.predict(pred_input_fn, yield_single_examples=False):
+      for i in range(len(result['ids'])):
+            write_output(writer,tokenizer.convert_ids_to_tokens(result['ids'][i]))
         
+      
 
 if __name__ == "__main__":
   flags.mark_flag_as_required("input_file")
