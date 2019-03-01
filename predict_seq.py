@@ -160,6 +160,8 @@ def create_instances_from_document(document,max_seq_length):
         masked_lm_positions=masked_lm_positions,
         masked_lm_labels=masked_lm_labels)
 
+    tf.logging.info("*******GOT DATA POINT********")
+    tf.logging.info(instance)
     return [instance]
 
 
@@ -386,6 +388,47 @@ def get_masked_lm_output(bert_config, input_tensor, output_weights, positions,
   return (loss, per_example_loss, log_probs)
 
 
+def get_new_input_ids(input_ids,
+              masked_lm_probs,masked_lm_positions,masked_lm_weights):
+  
+  #Reshaping the masked_lm_probs
+  sequence_shape = modeling.get_shape_list(masked_lm_positions, expected_rank=2) 
+  #for getting the shape info
+  batch_size = sequence_shape[0]
+  seq_length = sequence_shape[1]
+
+  masked_lm_probs = tf.reshape(masked_lm_probs,(batch_size,seq_length,-1))
+
+  #Getting the indexes for the predictions. shape = (batch_size,seq_length)
+  mask_lab_pred = tf.cast(tf.argmax(masked_lm_probs,axis=-1),dtype=tf.int32)
+  # Gathering the first masks only. shape = (batch_size,)
+  mask_lab_pred = tf.gather(mask_lab_pred,
+                            tf.constant(0,dtype=tf.int32),axis=-1)
+  # Gathering positions of the first mask. shape=(batch_size,)
+  mask_positions = tf.gather(masked_lm_positions,
+                          tf.constant(0,dtype=tf.int32),axis=-1)
+  #Assigning the first masks in input_ids
+  #--First converting mask_positions to one hot, shape=(batch_size,seq_length)
+  mask_positions = tf.one_hot(mask_positions,depth=seq_length,axis=1,dtype=tf.int32)
+  #--Next multiplying mask_positions_one_hot to mask_lab_pred and forming new_ids
+  mask_lab_pred = tf.reshape(mask_lab_pred,(batch_size,1))
+  input_ids = mask_positions*mask_lab_pred+(1-mask_positions)*input_ids
+
+  #Setting the first mask lm_weights to be zero
+
+  masked_lm_weights = tf.slice(masked_lm_weights,(0,1),(-1,-1))
+  masked_lm_weights = tf.concat([masked_lm_weights,tf.zeros(shape=(batch_size,1),
+                                                dtype=tf.float32)],axis=-1)
+
+  #Setting the masked_lm_positions first masks to be zero
+  masked_lm_positions = tf.slice(masked_lm_positions,(0,1),(-1,-1))
+  masked_lm_positions = tf.concat([masked_lm_positions,tf.zeros(shape=(batch_size,1),
+                                                dtype=tf.int32)],axis=-1)
+
+  
+  return input_ids,masked_lm_positions,masked_lm_weights
+      
+
 def model_fn_builder(bert_config, init_checkpoint, use_tpu,
                      use_one_hot_embeddings):
   """Returns `model_fn` closure for TPUEstimator."""
@@ -407,21 +450,42 @@ def model_fn_builder(bert_config, init_checkpoint, use_tpu,
 
     is_training = False
 
-    model = modeling.BertModel(
-        config=bert_config,
-        is_training=is_training,
-        input_ids=input_ids,
-        input_mask=input_mask,
-        token_type_ids=segment_ids,
-        use_one_hot_embeddings=use_one_hot_embeddings)
+    # Running while loop for prediction
 
-    (masked_lm_loss,
-     masked_lm_example_loss, masked_lm_log_probs) = get_masked_lm_output(
-         bert_config, model.get_sequence_output(), model.get_embedding_table(),
-         masked_lm_positions, masked_lm_ids, masked_lm_weights)
+    def body(new_input_ids,new_masked_lm_positions,new_masked_lm_weights ):
+
+      model = modeling.BertModel(
+          config=bert_config,
+          is_training=is_training,
+          input_ids=new_input_ids,
+          input_mask=input_mask,
+          token_type_ids=segment_ids,
+          use_one_hot_embeddings=use_one_hot_embeddings)
+
+      (_,_, masked_lm_log_probs) = get_masked_lm_output(
+           bert_config, model.get_sequence_output(), model.get_embedding_table(),
+           new_masked_lm_positions, masked_lm_ids, new_masked_lm_weights)
+
+      return get_new_input_ids(new_input_ids,
+              masked_lm_log_probs,new_masked_lm_positions,new_masked_lm_weights) 
+      
+
+    def cond(input_ids,masked_lm_positions,masked_lm_weights):
+      # If there is no masked element, we are done
+      return tf.reduce_max(masked_lm_weights)>0
 
 
-    total_loss = masked_lm_loss
+    ids,pos,wt = tf.while_loop(
+          cond=cond,
+          body=body,
+          loop_vars=[
+                input_ids,
+                masked_lm_positions,
+                masked_lm_weights
+          ],
+          back_prop=False
+      )
+
 
     tvars = tf.trainable_variables()
 
@@ -446,12 +510,12 @@ def model_fn_builder(bert_config, init_checkpoint, use_tpu,
       if var.name in initialized_variable_names:
         init_string = ", *INIT_FROM_CKPT*"
       tf.logging.info("  name = %s, shape = %s%s", var.name, var.shape,
-                      init_string)
-
+                        init_string)
+    
     # Prediction mode
     output_spec = tf.contrib.tpu.TPUEstimatorSpec(
         mode=mode,
-        predictions={"probabilities": masked_lm_log_probs},
+        predictions={"ids": ids},
           scaffold_fn=scaffold_fn)
 
     return output_spec
@@ -514,6 +578,7 @@ def main(_):
           num_shards=FLAGS.num_tpu_cores,
           per_host_input_for_training=is_per_host))
 
+  bert_config = modeling.BertConfig.from_json_file(FLAGS.bert_config_file)
 
   model_fn = model_fn_builder(
       bert_config=bert_config,
@@ -546,8 +611,6 @@ def main(_):
 
     features = get_features([instances[i] for i in range(len(todo)) if todo[i]], tokenizer, FLAGS.max_seq_length)
 
-    bert_config = modeling.BertConfig.from_json_file(FLAGS.bert_config_file)
-
     pred_input_fn = input_fn_builder(features=features, seq_length=FLAGS.max_seq_length)
 
     num_examples = len(features)
@@ -555,6 +618,7 @@ def main(_):
     result = next(estimator.predict(pred_input_fn, yield_single_examples=False))
     # this function returns the prediction only for masked tokens
     # We have to convert to complete utterance using instances
+    import pdb; pdb.set_trace()
     result = result.reshape([num_examples,-1,bert_config.vocab_size])
     k = 0
     with tf.gfile.GFile(output_pred_file, "w") as writer:
