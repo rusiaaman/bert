@@ -576,11 +576,16 @@ def _truncate_seq_pair(tokens_a, tokens_b, max_length):
 
 
 def create_model(bert_config, is_training, input_ids, input_mask, segment_ids,
-                 labels, num_labels, use_one_hot_embeddings):
+                 labels, num_labels, use_one_hot_embeddings,train_only_outer_layer=False):
   """Creates a classification model."""
+  if train_only_outer_layer:
+    is_training_bert = False
+  else:
+    is_training_bert = True
+  
   model = modeling.BertModel(
       config=bert_config,
-      is_training=is_training,
+      is_training=is_training_bert,
       input_ids=input_ids,
       input_mask=input_mask,
       token_type_ids=segment_ids,
@@ -647,7 +652,7 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
 
     (total_loss, per_example_loss, logits, probabilities) = create_model(
         bert_config, is_training, input_ids, input_mask, segment_ids, label_ids,
-        num_labels, use_one_hot_embeddings)
+        num_labels, use_one_hot_embeddings,flags.train_only_outer_layer)
 
     
     tvars = tf.trainable_variables()
