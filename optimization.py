@@ -69,7 +69,7 @@ def create_optimizer(loss, init_lr, num_train_steps, num_warmup_steps, use_tpu,
     optimizer = tf.contrib.tpu.CrossShardOptimizer(optimizer)
 
   if onlyouter:
-    tvars = [t for t in tf.trainable_variables() if t.name.startswith("bert")]
+    tvars = [t for t in tf.trainable_variables() if not t.name.startswith("bert")]
   else:
     tvars = tf.trainable_variables()
   grads = tf.gradients(loss, tvars)
