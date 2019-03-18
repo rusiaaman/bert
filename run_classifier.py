@@ -652,7 +652,7 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
 
     (total_loss, per_example_loss, logits, probabilities) = create_model(
         bert_config, is_training, input_ids, input_mask, segment_ids, label_ids,
-        num_labels, use_one_hot_embeddings,flags.train_only_outer_layer)
+        num_labels, use_one_hot_embeddings,params.get('train_only_outer_layer'))
 
     
     tvars = tf.trainable_variables()
