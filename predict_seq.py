@@ -62,6 +62,7 @@ flags.DEFINE_string(
 
 flags.DEFINE_integer("predict_batch_size", 8, "Total batch size for eval.")
 
+flags.DEFINE_integer("top_k", 10, "For predicting masks, top_k logits are considered.")
 
 # TPU specific
 flags.DEFINE_bool("use_tpu", False, "Whether to use TPU or GPU/CPU.")
@@ -389,7 +390,7 @@ def get_masked_lm_output(bert_config, input_tensor, output_weights, positions,
 
 
 def get_new_input_ids(input_ids,
-              masked_lm_probs,masked_lm_positions,masked_lm_weights):
+              masked_lm_probs,masked_lm_positions,masked_lm_weights,top_k):
   
   #Reshaping the masked_lm_probs
   sequence_shape = modeling.get_shape_list(masked_lm_positions, expected_rank=2) 
@@ -400,10 +401,16 @@ def get_new_input_ids(input_ids,
   # Gathering the first masks only. shape = (batch_size,vocab_size)
   mask_lab_pred = tf.gather(masked_lm_probs,
                             tf.range(0,batch_size*seq_length,delta=seq_length),axis=0)
-  #Getting the indexes for the predictions. shape = (batch_size,1)
+  #Getting the indexes for the predictions. output_shape = (batch_size,1)
   #mask_lab_pred = tf.random.multinomial(mask_lab_pred,1,output_dtype=tf.int32)
-  mask_lab_pred = tf.reshape(tf.cast(tf.argmax(mask_lab_pred,
-                  axis=-1),dtype=tf.int32),(batch_size,1))
+  #mask_lab_pred = tf.reshape(tf.cast(tf.argmax(mask_lab_pred,
+  #                axis=-1),dtype=tf.int32),(batch_size,1))
+  values,indices = tf.nn.top_k(mask_lab_pred,top_k)
+  indices = tf.reshape(indices,[-1])
+  psuedo_args = tf.random.multinomial(values,1,output_dtype=tf.int32)
+  mask_lab_preds = tf.gather(indices,tf.range(batch_size)+\
+                                    tf.squeeze(psuedo_args,axis=-1),axis=-1)
+  mask_lab_pred = tf.reshape(mask_lab_pred,[batch_size,1])
   # Gathering positions of the first mask. shape=(batch_size,)
   mask_positions = tf.gather(masked_lm_positions,
                           tf.constant(0,dtype=tf.int32),axis=-1)
@@ -470,7 +477,7 @@ def model_fn_builder(bert_config, init_checkpoint, use_tpu,
            new_masked_lm_positions, masked_lm_ids, new_masked_lm_weights)
 
       return get_new_input_ids(new_input_ids,
-              masked_lm_log_probs,new_masked_lm_positions,new_masked_lm_weights) 
+              masked_lm_log_probs,new_masked_lm_positions,new_masked_lm_weights,params["top_k"]) 
       
 
     def cond(input_ids,masked_lm_positions,masked_lm_weights):
@@ -597,7 +604,10 @@ def main(_):
       use_tpu=FLAGS.use_tpu,
       model_fn=model_fn,
       config=run_config,
-      predict_batch_size=FLAGS.predict_batch_size)
+      predict_batch_size=FLAGS.predict_batch_size,
+      params={
+      "top_k": FLAGS.top_k
+      })
 
   tf.logging.info("***** Running prediction *****")
   tf.logging.info("  Batch size = %d", FLAGS.predict_batch_size)

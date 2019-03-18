@@ -61,6 +61,10 @@ flags.DEFINE_bool(
     "Whether to lower case the input text. Should be True for uncased "
     "models and False for cased models.")
 
+flags.DEFINE_bool(
+    "train_only_outer_layer", False,
+    "Whether to train only outer layer for fine tuning")
+
 flags.DEFINE_integer(
     "max_seq_length", 128,
     "The maximum total input sequence length after WordPiece tokenization. "
@@ -582,6 +586,7 @@ def create_model(bert_config, is_training, input_ids, input_mask, segment_ids,
       token_type_ids=segment_ids,
       use_one_hot_embeddings=use_one_hot_embeddings)
 
+
   # In the demo, we are doing a simple classification task on the entire
   # segment.
   #
@@ -644,6 +649,7 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
         bert_config, is_training, input_ids, input_mask, segment_ids, label_ids,
         num_labels, use_one_hot_embeddings)
 
+    
     tvars = tf.trainable_variables()
     initialized_variable_names = {}
     scaffold_fn = None
@@ -672,7 +678,8 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
     if mode == tf.estimator.ModeKeys.TRAIN:
 
       train_op = optimization.create_optimizer(
-          total_loss, learning_rate, num_train_steps, num_warmup_steps, use_tpu)
+          total_loss, learning_rate, num_train_steps, num_warmup_steps, use_tpu,
+            onlyouter = params.get("train_only_outer_layer"))
 
       output_spec = tf.contrib.tpu.TPUEstimatorSpec(
           mode=mode,
@@ -862,7 +869,8 @@ def main(_):
       config=run_config,
       train_batch_size=FLAGS.train_batch_size,
       eval_batch_size=FLAGS.eval_batch_size,
-      predict_batch_size=FLAGS.predict_batch_size)
+      predict_batch_size=FLAGS.predict_batch_size,
+      params={'train_only_outer_layer':FLAGS.train_only_outer_layer})
 
   if FLAGS.do_train:
     train_file = os.path.join(FLAGS.output_dir, "train.tf_record")
