@@ -601,6 +601,15 @@ def create_model(bert_config, is_training, input_ids, input_mask, segment_ids,
 
   hidden_size = output_layer.shape[-1].value
 
+  with tf.variable_scope("top_layers"):
+
+    output_layer = tf.layers.dense(
+        output_layer,
+        hidden_size,
+        activation=modeling.get_activation(bert_config.hidden_act),
+        name="dense_o_{}".format(0),
+        kernel_initializer=modeling.create_initializer(bert_config.initializer_range))
+
   output_weights = tf.get_variable(
       "output_weights", [num_labels, hidden_size],
       initializer=tf.truncated_normal_initializer(stddev=0.02))
