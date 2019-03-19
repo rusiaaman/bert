@@ -65,6 +65,16 @@ flags.DEFINE_bool(
     "train_only_outer_layer", False,
     "Whether to train only outer layer for fine tuning")
 
+
+flags.DEFINE_string(
+    "reduce_method", "attention",
+    "Which reduce method to use for sentence representation")
+
+
+flags.DEFINE_integer(
+    "layer_to_use", -1,
+    "Which layer to use for pooled representation of sentence")
+
 flags.DEFINE_integer(
     "max_seq_length", 128,
     "The maximum total input sequence length after WordPiece tokenization. "
@@ -576,7 +586,8 @@ def _truncate_seq_pair(tokens_a, tokens_b, max_length):
 
 
 def create_model(bert_config, is_training, input_ids, input_mask, segment_ids,
-                 labels, num_labels, use_one_hot_embeddings,train_only_outer_layer=False):
+                 labels, num_labels, use_one_hot_embeddings,train_only_outer_layer=False,
+                 reduce_method="cls",layer_to_use=-1):
   """Creates a classification model."""
   if train_only_outer_layer:
     is_training_bert = False
@@ -597,41 +608,55 @@ def create_model(bert_config, is_training, input_ids, input_mask, segment_ids,
   #
   # If you want to use the token-level output, use model.get_sequence_output()
   # instead.
-  output_layer = model.get_sequence_output()
+  output_layer = model.get_nth_layer_output(layer_to_use)
 
   hidden_size = output_layer.shape[-1].value
 
-  input_shape = modeling.get_shape_list(input_ids, expected_rank=2)
-  batch_size = input_shape[0]
-  seq_length = input_shape[1]
+  if reduce_method == "cls" and layer_to_use==-1:
+    output_layer = model.get_pooled_output()
+  elif reduce_method == "cls":
+    output_layer = tf.squeeze(output_layer[:, 0:1, :], axis=1)
+  else:
+    # Use custom pooling
+    
 
-  with tf.variable_scope("top_layers"):
+    input_shape = modeling.get_shape_list(input_ids, expected_rank=2)
+    batch_size = input_shape[0]
+    seq_length = input_shape[1]
 
-    from_seq_length = 1
-    query = tf.get_variable('query_vec',[1,from_seq_length,hidden_size],
-            initializer=tf.truncated_normal_initializer(stddev=0.02))
-    query = tf.tile(query,[batch_size,1,1])
-    attention_head_size = int(hidden_size / bert_config.num_attention_heads)
+    if reduce_method == "attention":
+      with tf.variable_scope("top_layers"):
+
+        from_seq_length = 1
+        query = tf.get_variable('query_vec',[1,from_seq_length,hidden_size],
+                initializer=tf.truncated_normal_initializer(stddev=0.02))
+        query = tf.tile(query,[batch_size,1,1])
+        attention_head_size = int(hidden_size / bert_config.num_attention_heads)
 
 
-    attention_mask = modeling.create_attention_mask_from_input_mask(
-            query, input_mask)  #Attention mask is over query to input_ids
+        attention_mask = modeling.create_attention_mask_from_input_mask(
+                query, input_mask)  #Attention mask is over query to input_ids
 
-    with tf.variable_scope("attention"):
-      attention_out = modeling.attention_layer(
-                from_tensor=query,
-                to_tensor=output_layer,
-                attention_mask=attention_mask,
-                num_attention_heads=bert_config.num_attention_heads,
-                size_per_head=attention_head_size,
-                attention_probs_dropout_prob=bert_config.attention_probs_dropout_prob,
-                initializer_range=bert_config.initializer_range,
-                do_return_2d_tensor=False,
-                batch_size=batch_size,
-                from_seq_length=from_seq_length,
-                to_seq_length=seq_length)
+        with tf.variable_scope("attention"):
+          attention_out = modeling.attention_layer(
+                    from_tensor=query,
+                    to_tensor=output_layer,
+                    attention_mask=attention_mask,
+                    num_attention_heads=bert_config.num_attention_heads,
+                    size_per_head=attention_head_size,
+                    attention_probs_dropout_prob=bert_config.attention_probs_dropout_prob,
+                    initializer_range=bert_config.initializer_range,
+                    do_return_2d_tensor=False,
+                    batch_size=batch_size,
+                    from_seq_length=from_seq_length,
+                    to_seq_length=seq_length)
 
-    output_layer = tf.squeeze(attention_out,axis=1)
+        output_layer = tf.squeeze(attention_out,axis=1)
+    elif reduce_method == "mean":
+      output_layer = tf.reduce_mean(output_layer[:,1:,:],axis=1,keepdims=False)
+
+    else:
+      raise NotImplementedError(f"{reduce_method} reduce method not available")
 
 
   output_weights = tf.get_variable(
@@ -685,7 +710,9 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
 
     (total_loss, per_example_loss, logits, probabilities) = create_model(
         bert_config, is_training, input_ids, input_mask, segment_ids, label_ids,
-        num_labels, use_one_hot_embeddings,params.get('train_only_outer_layer'))
+        num_labels, use_one_hot_embeddings,params.get('train_only_outer_layer'),
+        reduce_method = params.get("reduce_method","cls"),
+        layer_to_use = params.get("layer_to_use",-1))
 
     
     tvars = tf.trainable_variables()
@@ -912,7 +939,9 @@ def main(_):
       train_batch_size=FLAGS.train_batch_size,
       eval_batch_size=FLAGS.eval_batch_size,
       predict_batch_size=FLAGS.predict_batch_size,
-      params={'train_only_outer_layer':FLAGS.train_only_outer_layer})
+      params={'train_only_outer_layer':FLAGS.train_only_outer_layer,
+              'reduce_method':FLAGS.reduce_method,
+              'layer_to_use':FLAGS.layer_to_use})
 
   if FLAGS.do_train:
     train_file = os.path.join(FLAGS.output_dir, "train.tf_record")

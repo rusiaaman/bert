@@ -234,6 +234,9 @@ class BertModel(object):
   def get_pooled_output(self):
     return self.pooled_output
 
+  def get_nth_layer_output(self,k):
+    return self.all_encoder_layers[k]
+
   def get_sequence_output(self):
     """Gets final hidden layer of encoder.
 
