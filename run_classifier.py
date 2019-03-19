@@ -701,12 +701,12 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
           return tf.train.Scaffold()
 
         scaffold_fn = tpu_scaffold
+        training_hook = None
 
-        training_hook = tf.training.LoggingTensorHook({"loss": total_loss}
-                                                          ,every_n_iter=100)
       else:
         tf.train.init_from_checkpoint(init_checkpoint, assignment_map)
-        training_hook = None
+        training_hook = tf.train.LoggingTensorHook({"loss": total_loss}
+                                                          ,every_n_iter=100)
 
     tf.logging.info("**** Trainable Variables ****")
     for var in tvars:
