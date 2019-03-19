@@ -701,8 +701,12 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
           return tf.train.Scaffold()
 
         scaffold_fn = tpu_scaffold
+
+        training_hook = tf.training.LoggingTensorHook({"loss": total_loss}
+                                                          ,every_n_iter=100)
       else:
         tf.train.init_from_checkpoint(init_checkpoint, assignment_map)
+        training_hook = None
 
     tf.logging.info("**** Trainable Variables ****")
     for var in tvars:
@@ -722,7 +726,8 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
           mode=mode,
           loss=total_loss,
           train_op=train_op,
-          scaffold_fn=scaffold_fn)
+          scaffold_fn=scaffold_fn,
+          training_hooks=[training_hook])
     elif mode == tf.estimator.ModeKeys.EVAL:
 
       def metric_fn(per_example_loss, label_ids, logits, is_real_example):
