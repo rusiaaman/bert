@@ -597,18 +597,42 @@ def create_model(bert_config, is_training, input_ids, input_mask, segment_ids,
   #
   # If you want to use the token-level output, use model.get_sequence_output()
   # instead.
-  output_layer = model.get_pooled_output()
+  output_layer = model.get_sequence_output()
 
   hidden_size = output_layer.shape[-1].value
 
+  input_shape = modeling.get_shape_list(input_ids, expected_rank=2)
+  batch_size = input_shape[0]
+  seq_length = input_shape[1]
+
   with tf.variable_scope("top_layers"):
 
-    output_layer = tf.layers.dense(
-        output_layer,
-        hidden_size,
-        activation=modeling.get_activation(bert_config.hidden_act),
-        name="dense_o_{}".format(0),
-        kernel_initializer=modeling.create_initializer(bert_config.initializer_range))
+    from_seq_length = 1
+    query = tf.get_variable('query_vec',[1,from_seq_length,hidden_size],
+            initializer=tf.truncated_normal_initializer(stddev=0.02))
+    query = tf.tile(query,[batch_size,1,1])
+    attention_head_size = int(hidden_size / bert_config.num_attention_heads)
+
+
+    attention_mask = modeling.create_attention_mask_from_input_mask(
+            query, input_mask)  #Attention mask is over query to input_ids
+
+    with tf.variable_scope("attention"):
+      attention_out = modeling.attention_layer(
+                from_tensor=query,
+                to_tensor=output_layer,
+                attention_mask=attention_mask,
+                num_attention_heads=bert_config.num_attention_heads,
+                size_per_head=attention_head_size,
+                attention_probs_dropout_prob=bert_config.attention_probs_dropout_prob,
+                initializer_range=bert_config.initializer_range,
+                do_return_2d_tensor=False,
+                batch_size=batch_size,
+                from_seq_length=from_seq_length,
+                to_seq_length=seq_length)
+
+    output_layer = tf.squeeze(attention_out,axis=1)
+
 
   output_weights = tf.get_variable(
       "output_weights", [num_labels, hidden_size],
