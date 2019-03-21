@@ -638,7 +638,7 @@ def create_model(bert_config, is_training, input_ids, input_mask, segment_ids,
                 query, input_mask)  #Attention mask is over query to input_ids
 
         with tf.variable_scope("attention"):
-          attention_out = modeling.attention_layer(
+          attention_output = modeling.attention_layer(
                     from_tensor=query,
                     to_tensor=output_layer,
                     attention_mask=attention_mask,
@@ -651,7 +651,28 @@ def create_model(bert_config, is_training, input_ids, input_mask, segment_ids,
                     from_seq_length=from_seq_length,
                     to_seq_length=seq_length)
 
-        output_layer = tf.squeeze(attention_out,axis=1)
+
+        # The activation is only applied to the "intermediate" hidden layer.
+        with tf.variable_scope("intermediate"):
+          intermediate_output = tf.layers.dense(
+              attention_output,
+              bert_config.intermediate_size,
+              activation=modeling.get_activation(bert_config.hidden_act),
+              kernel_initializer=modeling.create_initializer(bert_config.initializer_range))
+
+
+        # Down-project back to `hidden_size` then add the residual.
+        with tf.variable_scope("output"):
+          layer_output = tf.layers.dense(
+              intermediate_output,
+              bert_config.hidden_size,
+              kernel_initializer=modeling.create_initializer(bert_config.initializer_range))
+          layer_output = modeling.dropout(layer_output, bert_config.hidden_dropout_prob)
+          output_layer = modeling.layer_norm(layer_output + attention_output)
+
+
+        output_layer = tf.squeeze(output_layer,axis=1)
+
     elif reduce_method == "mean":
       output_layer = tf.reduce_mean(output_layer[:,1:,:],axis=1,keepdims=False)
 
